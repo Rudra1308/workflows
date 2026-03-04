@@ -1,0 +1,236 @@
+
+{
+  "name": "YouTube Shorts Automation - Complete",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "name": "Daily Trigger - 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "id": "trigger-daily"
+    },
+    {
+      "parameters": {
+        "url": "https://trends.google.com/trending/rss?geo=US",
+        "options": {}
+      },
+      "name": "Get Trending Topics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [450, 300],
+      "id": "get-trends"
+    },
+    {
+      "parameters": {
+        "operation": "parseXml",
+        "dataPropertyName": "data"
+      },
+      "name": "Parse RSS",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "id": "parse-rss"
+    },
+    {
+      "parameters": {
+        "functionCode": "const items = $input.all();\nconst entries = items[0].json.rss.channel[0].item || [];\n\n// Get random 3 topics for today's videos\nconst shuffled = entries.sort(() => 0.5 - Math.random());\nconst selected = shuffled.slice(0, 3);\n\nreturn selected.map(item => ({\n  json: {\n    topic: item.title[0],\n    description: item.description ? item.description[0] : '',\n    link: item.link ? item.link[0] : ''\n  }\n}));"
+      },
+      "name": "Select Topics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300],
+      "id": "select-topics"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:11434/api/generate",
+        "authentication": "none",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama3"
+            },
+            {
+              "name": "prompt",
+              "value": "=Create an engaging 60-90 second short story script about: {{ $json.topic }}\n\nRequirements:\n- Hook viewers in first 3 seconds\n- Tell complete story with beginning, middle, end\n- Keep it suspenseful and emotional\n- Use vivid descriptions\n- End with a powerful conclusion\n- Write ONLY the narration script, no stage directions\n- Format: Just the story text, nothing else\n\nScript:"
+            },
+            {
+              "name": "stream",
+              "value": "false"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Generate Script with Llama3",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1050, 300],
+      "id": "generate-script"
+    },
+    {
+      "parameters": {
+        "functionCode": "const response = $input.item.json;\nconst script = response.response;\nconst topic = $('Select Topics').item.json.topic;\n\n// Generate title\nconst title = topic.substring(0, 80);\n\n// Extract keywords for image search\nconst keywords = topic.split(' ').slice(0, 3).join(' ');\n\n// Generate hashtags\nconst words = topic.toLowerCase().split(' ');\nconst hashtags = words.slice(0, 5).map(w => '#' + w.replace(/[^a-z0-9]/g, '')).join(' ');\n\nreturn {\n  json: {\n    topic: topic,\n    title: title,\n    script: script,\n    keywords: keywords,\n    hashtags: hashtags,\n    timestamp: new Date().getTime()\n  }\n};"
+      },
+      "name": "Process Script",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300],
+      "id": "process-script"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.pexels.com/v1/search?query={{ $json.keywords }}&per_page=5&orientation=portrait",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "YOUR_PEXELS_API_KEY"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Get Images from Pexels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1450, 300],
+      "id": "get-images"
+    },
+    {
+      "parameters": {
+        "functionCode": "const photos = $input.item.json.photos || [];\nconst scriptData = $('Process Script').item.json;\n\nif (photos.length === 0) {\n  throw new Error('No images found');\n}\n\n// Download images\nconst imageUrls = photos.slice(0, 5).map(p => p.src.large);\n\nreturn {\n  json: {\n    ...scriptData,\n    image_urls: imageUrls,\n    num_images: imageUrls.length\n  }\n};"
+      },
+      "name": "Prepare Image URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300],
+      "id": "prepare-images"
+    },
+    {
+      "parameters": {
+        "command": "=python -m edge_tts --text \"{{ $json.script }}\" --write-media C:\\youtube_automation\\audio\\audio_{{ $json.timestamp }}.mp3 --voice en-US-AriaNeural"
+      },
+      "name": "Generate Audio (TTS)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1850, 300],
+      "id": "generate-audio"
+    },
+    {
+      "parameters": {
+        "functionCode": "const https = require('https');\nconst fs = require('fs');\nconst path = require('path');\n\nconst data = $input.item.json;\nconst imageUrls = data.image_urls;\nconst timestamp = data.timestamp;\nconst baseDir = 'C:\\\\youtube_automation\\\\images';\n\n// Download images synchronously\nconst downloadedImages = [];\n\nfor (let i = 0; i < imageUrls.length; i++) {\n  const url = imageUrls[i];\n  const filename = path.join(baseDir, `img_${timestamp}_${i}.jpg`);\n  \n  // Simple sync download (for n8n compatibility)\n  const file = fs.createWriteStream(filename);\n  \n  await new Promise((resolve, reject) => {\n    https.get(url, (response) => {\n      response.pipe(file);\n      file.on('finish', () => {\n        file.close();\n        downloadedImages.push(filename);\n        resolve();\n      });\n    }).on('error', reject);\n  });\n}\n\nreturn {\n  json: {\n    ...data,\n    audio_file: `C:\\\\youtube_automation\\\\audio\\\\audio_${timestamp}.mp3`,\n    image_files: downloadedImages,\n    output_file: `C:\\\\youtube_automation\\\\videos\\\\video_${timestamp}.mp4`\n  }\n};"
+      },
+      "name": "Download Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 300],
+      "id": "download-images"
+    },
+    {
+      "parameters": {
+        "command": "=python C:\\youtube_automation\\video_generator.py '{{ JSON.stringify($json) }}'"
+      },
+      "name": "Create Video",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2250, 300],
+      "id": "create-video"
+    },
+    {
+      "parameters": {
+        "functionCode": "const prevData = $('Download Images').item.json;\nconst videoResult = JSON.parse($input.item.json.stdout);\n\nconst description = `${prevData.script}\\n\\n${prevData.hashtags}\\n\\nCreated with AI`;\nconst tags = prevData.hashtags.split(' ').map(t => t.replace('#', '')).filter(t => t.length > 0);\n\nreturn {\n  json: {\n    video_file: videoResult.video_path,\n    title: prevData.title,\n    description: description,\n    tags: tags\n  }\n};"
+      },
+      "name": "Prepare Upload Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 300],
+      "id": "prepare-upload"
+    },
+    {
+      "parameters": {
+        "command": "=python C:\\youtube_automation\\youtube_uploader.py '{{ JSON.stringify($json) }}'"
+      },
+      "name": "Upload to YouTube",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2650, 300],
+      "id": "upload-youtube"
+    },
+    {
+      "parameters": {
+        "functionCode": "const result = JSON.parse($input.item.json.stdout);\n\nreturn {\n  json: {\n    success: true,\n    video_url: result.url,\n    video_id: result.video_id,\n    title: result.title,\n    uploaded_at: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Format Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2850, 300],
+      "id": "format-response"
+    }
+  ],
+  "connections": {
+    "Daily Trigger - 9 AM": {
+      "main": [[{ "node": "Get Trending Topics", "type": "main", "index": 0 }]]
+    },
+    "Get Trending Topics": {
+      "main": [[{ "node": "Parse RSS", "type": "main", "index": 0 }]]
+    },
+    "Parse RSS": {
+      "main": [[{ "node": "Select Topics", "type": "main", "index": 0 }]]
+    },
+    "Select Topics": {
+      "main": [[{ "node": "Generate Script with Llama3", "type": "main", "index": 0 }]]
+    },
+    "Generate Script with Llama3": {
+      "main": [[{ "node": "Process Script", "type": "main", "index": 0 }]]
+    },
+    "Process Script": {
+      "main": [[{ "node": "Get Images from Pexels", "type": "main", "index": 0 }]]
+    },
+    "Get Images from Pexels": {
+      "main": [[{ "node": "Prepare Image URLs", "type": "main", "index": 0 }]]
+    },
+    "Prepare Image URLs": {
+      "main": [[{ "node": "Generate Audio (TTS)", "type": "main", "index": 0 }]]
+    },
+    "Generate Audio (TTS)": {
+      "main": [[{ "node": "Download Images", "type": "main", "index": 0 }]]
+    },
+    "Download Images": {
+      "main": [[{ "node": "Create Video", "type": "main", "index": 0 }]]
+    },
+    "Create Video": {
+      "main": [[{ "node": "Prepare Upload Data", "type": "main", "index": 0 }]]
+    },
+    "Prepare Upload Data": {
+      "main": [[{ "node": "Upload to YouTube", "type": "main", "index": 0 }]]
+    },
+    "Upload to YouTube": {
+      "main": [[{ "node": "Format Success Response", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-26T00:00:00.000Z",
+  "versionId": "1"
+}
